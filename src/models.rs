@@ -144,11 +144,17 @@ pub struct Shape {
 /// Dataset value request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatasetValueRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub start: Option<Vec<u64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stop: Option<Vec<u64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub step: Option<Vec<u64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub points: Option<Vec<Vec<u64>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub value_base64: Option<String>,
 }
 
@@ -175,10 +181,13 @@ pub struct GroupCreateRequest {
 pub struct DatasetCreateRequest {
     #[serde(rename = "type")]
     pub data_type: DataTypeSpec,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub shape: Option<ShapeSpec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub maxdims: Option<Vec<u64>>,
-    #[serde(rename = "creationProperties")]
+    #[serde(rename = "creationProperties", skip_serializing_if = "Option::is_none")]
     pub creation_properties: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<LinkRequest>,
 }
 
