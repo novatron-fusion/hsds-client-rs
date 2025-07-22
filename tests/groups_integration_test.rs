@@ -27,8 +27,8 @@ async fn test_create_group() {
     let client = create_test_client().expect("Failed to create client");
     let domain_path = create_test_domain_name();
     
-    // Create test domain first
-    let domain = client.domains().create_domain(&domain_path, None).await
+    // Create the domain first
+    let _domain = client.domains().create_domain(&domain_path, None).await
         .expect("Failed to create test domain");
     
     // Create a child group
@@ -85,8 +85,8 @@ async fn test_get_group() {
     let client = create_test_client().expect("Failed to create client");
     let domain_path = create_test_domain_name();
     
-    // Create test domain
-    let domain = client.domains().create_domain(&domain_path, None).await
+    // Create the domain first
+    let _domain = client.domains().create_domain(&domain_path, None).await
         .expect("Failed to create test domain");
     
     // Create a group
