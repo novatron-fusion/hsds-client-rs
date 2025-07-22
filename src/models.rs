@@ -217,8 +217,11 @@ pub struct LinkRequest {
 /// Link creation body
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LinkCreateRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub h5path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub h5domain: Option<String>,
 }
 
