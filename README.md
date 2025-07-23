@@ -21,6 +21,135 @@ hsds_client = { path = "../hsds_client" }
 tokio = { version = "1.0", features = ["full"] }
 ```
 
+## HDF5 Native Library Setup (Required for Examples)
+
+Some examples in this repository (like `h5_file_loader.rs`) require the HDF5 native library to be installed on your system. This is needed to read actual HDF5 files from disk using the `hdf5-metno` crate.
+
+### Windows Installation
+
+1. **Download the HDF5 Library**:
+   - Visit [https://www.hdfgroup.org/download-hdf5/](https://www.hdfgroup.org/download-hdf5/)
+   - Download the Windows installer: `hdf5-1.14.6-win-vs2022_cl.msi`
+   - This version is compiled with Visual Studio 2022 and is compatible with the Rust toolchain
+
+2. **Install the Library**:
+   - Run the MSI installer as Administrator
+   - Choose the installation directory (default is recommended: `C:\Program Files\HDF_Group\HDF5\1.14.6\`)
+   - **Important**: Make sure to check "Add HDF5 to system PATH" during installation
+
+3. **Verify Installation**:
+   - Open a new command prompt
+   - Run: `h5dump --version`
+   - You should see version information for HDF5
+
+4. **Set PATH Environment Variable**:
+   If the installer didn't automatically add HDF5 to your PATH, or if you're still getting errors, manually add it:
+   
+   **Option A - Command Line (Temporary)**:
+   ```cmd
+   set PATH=%PATH%;"C:\Program Files\HDF_Group\HDF5\1.14.6\bin"
+   ```
+   
+   **Option B - System Environment Variables (Permanent)**:
+   - Open System Properties → Advanced → Environment Variables
+   - Under System Variables, find and select "Path", then click "Edit"
+   - Click "New" and add: `C:\Program Files\HDF_Group\HDF5\1.14.6\bin`
+   - Click "OK" to save changes
+   - **Important**: Restart your command prompt/IDE after making this change
+
+5. **Verify PATH Setup**:
+   - Open a **new** command prompt
+   - Run: `h5dump --version`
+   - If successful, you should see HDF5 version information
+
+### Linux/macOS Installation
+
+```bash
+# Ubuntu/Debian
+sudo apt-get install libhdf5-dev
+
+# CentOS/RHEL/Fedora
+sudo yum install hdf5-devel
+# or
+sudo dnf install hdf5-devel
+
+# macOS with Homebrew
+brew install hdf5
+```
+
+### Testing the Installation
+
+Once HDF5 is installed and PATH is configured, you can test the examples:
+
+```bash
+# First, verify HDF5 is accessible
+h5dump --version
+
+# Check that the h5_file_loader example compiles
+cargo check --example h5_file_loader
+
+# Run the example with a test HDF5 file
+cargo run --example h5_file_loader
+```
+
+**Note**: Make sure you have an HSDS server running on `http://localhost:5101` before running the loader example, or modify the server URL in the example code.
+
+### Environment Variables for Development
+
+If you're still having issues, you may need to set additional environment variables:
+
+```cmd
+# Windows Command Prompt
+set HDF5_DIR=C:\Program Files\HDF_Group\HDF5\1.14.6
+set HDF5_ROOT=C:\Program Files\HDF_Group\HDF5\1.14.6
+set PATH=%PATH%;"C:\Program Files\HDF_Group\HDF5\1.14.6\bin"
+
+# Then test compilation
+cargo clean
+cargo check --example h5_file_loader
+```
+
+### Testing the Installation
+
+Once HDF5 is installed, you can test the examples:
+
+```bash
+# Check that the h5_file_loader example compiles
+cargo check --example h5_file_loader
+
+# Run the example with a test HDF5 file
+cargo run --example h5_file_loader
+```
+
+### Troubleshooting
+
+**If you get compilation errors like "could not find native library":**
+1. Ensure HDF5 is installed correctly: `h5dump --version`
+2. Add HDF5 to PATH manually (see step 4 above)
+3. Set additional environment variables:
+   ```cmd
+   set HDF5_DIR=C:\Program Files\HDF_Group\HDF5\1.14.6
+   set HDF5_ROOT=C:\Program Files\HDF_Group\HDF5\1.14.6
+   ```
+4. Restart your command prompt/IDE completely
+5. Run `cargo clean` then `cargo check --example h5_file_loader`
+
+**If you get linking errors:**
+- Make sure you downloaded the correct version (`hdf5-1.14.6-win-vs2022_cl.msi`)
+- Verify that the HDF5 library is in your system PATH
+- On Windows, restart your command prompt/IDE after installation
+- Try running as Administrator if permission issues occur
+
+**If the example can't find the test file:**
+- Make sure you have a test HDF5 file in `examples/test files/water_224.h5`
+- Check that the file path in the example matches your file location
+- You can modify the `h5_file_path` variable in the example to point to any HDF5 file
+
+**If HSDS connection fails:**
+- Make sure you have an HSDS server running on `http://localhost:5101`
+- Or modify the server URL in the example code to point to your HSDS instance
+- Check that the authentication credentials are correct
+
 ## Quick Start
 
 ```rust
