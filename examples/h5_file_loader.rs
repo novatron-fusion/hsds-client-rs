@@ -103,7 +103,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 /// Configuration for chunked uploads
-const MAX_PAYLOAD_SIZE_BYTES: usize = 2 * 1024 * 1024; // 2MB limit (very conservative)
+const MAX_PAYLOAD_SIZE_BYTES: usize = 950000; // 1MB limit (very conservative)
 const CHUNK_SIZE_ELEMENTS: usize = 32 * 1024; // 32K elements per chunk (much smaller)
 const MAX_CHUNK_ROWS: usize = 128; // Maximum rows per chunk for 2D arrays
 
@@ -342,8 +342,13 @@ async fn copy_dataset_data(
     let shape = h5_dataset.shape();
     let total_elements: usize = shape.iter().product::<usize>();
     
-    // Estimate data size (rough calculation)
-    let estimated_size = total_elements * 8; // Assume 8 bytes per element for estimation
+    // Estimate data size using actual datatype size
+    let dtype = h5_dataset.dtype()?;
+    let type_size = dtype.size();
+    let estimated_size = total_elements * type_size;
+
+    debug!("Dataset shape: {:?}, total elements: {}, estimated size: {} bytes ({} MB)", 
+           shape, total_elements, estimated_size, estimated_size as f64 / (1024.0 * 1024.0));
     
     if estimated_size > MAX_PAYLOAD_SIZE_BYTES {
         println!("      📦 Large dataset detected ({:.1} MB), using chunked upload", 
@@ -393,6 +398,10 @@ async fn copy_dataset_data_single(
         },
         hdf5::types::TypeDescriptor::Integer(IntSize::U1) => {
             let data = h5_dataset.read_raw::<i8>()?;
+            convert_to_multidim_json(data, &shape)
+        },
+        hdf5::types::TypeDescriptor::Unsigned(IntSize::U1) => {
+            let data = h5_dataset.read_raw::<u8>()?;
             convert_to_multidim_json(data, &shape)
         },
         hdf5::types::TypeDescriptor::VarLenUnicode => {
@@ -480,6 +489,10 @@ async fn copy_1d_chunked(
     
     println!("      📊 1D Array: {} elements, {} chunks", total_len, total_chunks);
     
+    // Get the actual HDF5 data type to read correctly
+    let dtype = h5_dataset.dtype()?;
+    let type_desc = dtype.to_descriptor()?;
+    
     let mut progress = ProgressBar::new(total_chunks);
     let mut chunk_index = 0;
     let mut failed_chunks = 0;
@@ -487,25 +500,50 @@ async fn copy_1d_chunked(
     for start in (0..total_len).step_by(chunk_size) {
         let end = (start + chunk_size).min(total_len);
         
-        // Use direct indexing approach instead of hyperslab selection
-        let chunk_data = if let Ok(full_data) = h5_dataset.read_raw::<u8>() {
-            let chunk: Vec<u8> = full_data[start..end].to_vec();
-            json!(chunk)
-        } else if let Ok(full_data) = h5_dataset.read_raw::<i32>() {
-            let chunk: Vec<i32> = full_data[start..end].to_vec();
-            json!(chunk)
-        } else if let Ok(full_data) = h5_dataset.read_raw::<f32>() {
-            let chunk: Vec<f32> = full_data[start..end].to_vec();
-            json!(chunk)
-        } else if let Ok(full_data) = h5_dataset.read_raw::<f64>() {
-            let chunk: Vec<f64> = full_data[start..end].to_vec();
-            json!(chunk)
-        } else {
-            warn!("Could not read chunk for 1D array");
-            failed_chunks += 1;
-            chunk_index += 1;
-            progress.update(chunk_index);
-            continue;
+        // Read data with the correct type based on HDF5 descriptor
+        let chunk_data = match type_desc {
+            hdf5::types::TypeDescriptor::Float(FloatSize::U8) => {
+                let full_data = h5_dataset.read_raw::<f64>()?;
+                let chunk: Vec<f64> = full_data[start..end].to_vec();
+                json!(chunk)
+            },
+            hdf5::types::TypeDescriptor::Float(FloatSize::U4) => {
+                let full_data = h5_dataset.read_raw::<f32>()?;
+                let chunk: Vec<f32> = full_data[start..end].to_vec();
+                json!(chunk)
+            },
+            hdf5::types::TypeDescriptor::Integer(IntSize::U8) => {
+                let full_data = h5_dataset.read_raw::<i64>()?;
+                let chunk: Vec<i64> = full_data[start..end].to_vec();
+                json!(chunk)
+            },
+            hdf5::types::TypeDescriptor::Integer(IntSize::U4) => {
+                let full_data = h5_dataset.read_raw::<i32>()?;
+                let chunk: Vec<i32> = full_data[start..end].to_vec();
+                json!(chunk)
+            },
+            hdf5::types::TypeDescriptor::Integer(IntSize::U2) => {
+                let full_data = h5_dataset.read_raw::<i16>()?;
+                let chunk: Vec<i16> = full_data[start..end].to_vec();
+                json!(chunk)
+            },
+            hdf5::types::TypeDescriptor::Integer(IntSize::U1) => {
+                let full_data = h5_dataset.read_raw::<i8>()?;
+                let chunk: Vec<i8> = full_data[start..end].to_vec();
+                json!(chunk)
+            },
+            hdf5::types::TypeDescriptor::Unsigned(IntSize::U1) => {
+                let full_data = h5_dataset.read_raw::<u8>()?;
+                let chunk: Vec<u8> = full_data[start..end].to_vec();
+                json!(chunk)
+            },
+            _ => {
+                warn!("Unsupported data type for 1D chunking: {:?}", type_desc);
+                failed_chunks += 1;
+                chunk_index += 1;
+                progress.update(chunk_index);
+                continue;
+            }
         };
         
         let value_request = DatasetValueRequest {
@@ -813,6 +851,10 @@ fn convert_hdf5_dtype_to_hsds(h5_dataset: &H5Dataset) -> Result<String, Box<dyn 
         hdf5::types::TypeDescriptor::Integer(IntSize::U1) => {
             // For 8-bit integers, default to signed
             Ok("H5T_STD_I8LE".to_string())
+        },
+        hdf5::types::TypeDescriptor::Unsigned(IntSize::U1) => {
+            // For unsigned 8-bit integers
+            Ok("H5T_STD_U8LE".to_string())
         },
         hdf5::types::TypeDescriptor::VarLenUnicode => Ok("H5T_STRING".to_string()),
         hdf5::types::TypeDescriptor::VarLenAscii => Ok("H5T_STRING".to_string()),
