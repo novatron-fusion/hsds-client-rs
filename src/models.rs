@@ -191,12 +191,53 @@ pub struct DatasetCreateRequest {
     pub link: Option<LinkRequest>,
 }
 
+/// String character set enumeration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum StringCharSet {
+    #[serde(rename = "H5T_CSET_ASCII")]
+    Ascii,
+    #[serde(rename = "H5T_CSET_UTF8")]
+    Utf8,
+}
+
+/// String padding enumeration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum StringPadding {
+    #[serde(rename = "H5T_STR_NULLPAD")]
+    NullPad,
+    #[serde(rename = "H5T_STR_NULLTERM")]
+    NullTerm,
+    #[serde(rename = "H5T_STR_SPACEPAD")]
+    SpacePad,
+}
+
+/// String length specification
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StringLength {
+    Variable(String), // "H5T_VARIABLE"
+    Fixed(u32),
+}
+
+/// String data type specification
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StringDataType {
+    #[serde(rename = "class")]
+    pub class: String, // Always "H5T_STRING"
+    #[serde(rename = "charSet")]
+    pub char_set: StringCharSet,
+    #[serde(rename = "strPad")]
+    pub str_pad: StringPadding,
+    pub length: StringLength,
+}
+
 /// Data type specification (can be string or object)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum DataTypeSpec {
     Predefined(String),
     Custom(DataType),
+    String(StringDataType),
 }
 
 /// Shape specification (can be array or null)

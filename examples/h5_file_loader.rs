@@ -1,7 +1,8 @@
+use hdf5::types::{FloatSize, IntSize};
 use hsds_client::{
     HsdsClient, BasicAuth, 
-    DatasetCreateRequest, DataTypeSpec, ShapeSpec, DatasetValueRequest,
-    LinkRequest, LinkCreateRequest
+    DatasetCreateRequest, DatasetValueRequest,
+    LinkCreateRequest
 };
 use hdf5::{File as H5File, Group as H5Group, Dataset as H5Dataset};
 use serde_json::json;
@@ -88,8 +89,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     verify_upload(&client, &target_file).await?;
     
     // Keep the uploaded file on the server
-    println!("\n✅ Upload completed! File available at: {}", target_file);
-    
+    println!("\n✅ Upload completed! File available at: http://localhost:3000/file?={}", target_file);
+
     // Clean up (uncomment if you want to delete the file after upload)
     // println!("\n🗑️  Cleaning up...");
     // match client.domains().delete_domain(&target_file).await {
@@ -304,7 +305,7 @@ async fn copy_dataset(
     let dtype = h5_dataset.dtype()?;
     
     debug!("Dataset shape: {:?}", shape);
-    debug!("Dataset dtype: {:?}", dtype);
+    debug!("Dataset dtype: {:?}", dtype.to_descriptor()?.to_string());
     
     // Convert HDF5 data type to HSDS data type
     let hsds_dtype = match convert_hdf5_dtype_to_hsds(h5_dataset) {
@@ -316,16 +317,12 @@ async fn copy_dataset(
     };
     
     // Create the dataset in HSDS
-    let dataset_request = DatasetCreateRequest {
-        data_type: DataTypeSpec::Predefined(hsds_dtype),
-        shape: Some(ShapeSpec::Dimensions(shape.iter().map(|&x| x as u64).collect())),
-        maxdims: None,
-        creation_properties: None,
-        link: Some(LinkRequest {
-            id: parent_group_id.to_string(),
-            name: dataset_name.to_string(),
-        }),
-    };
+    let dataset_request = DatasetCreateRequest::from_hsds_type_with_link(
+        &hsds_dtype,
+        shape.iter().map(|&x| x as u64).collect(),
+        parent_group_id,
+        dataset_name,
+    );
     
     let hsds_dataset = client.datasets().create_dataset(domain, dataset_request).await?;
     stats.increment_datasets();
@@ -394,12 +391,14 @@ async fn copy_dataset_data_single(
     } else if let Ok(data) = h5_dataset.read_raw::<hdf5::types::VarLenUnicode>() {
         let strings: Vec<String> = data.into_iter().map(|s| s.to_string()).collect();
         json!(strings)
+    } else if let Ok(data) = h5_dataset.read_raw::<hdf5::types::VarLenAscii>() {
+        let strings: Vec<String> = data.into_iter().map(|s| s.to_string()).collect();
+        json!(strings)
     } else {
         warn!("Unsupported data type for dataset");
         return Ok(()); // Skip unsupported types
     };
-    
-    // Write the data to HSDS
+
     let value_request = DatasetValueRequest {
         start: None,
         stop: None,
@@ -788,7 +787,9 @@ fn convert_hdf5_dtype_to_hsds(h5_dataset: &H5Dataset) -> Result<String, Box<dyn 
     } else if h5_dataset.read_raw::<f64>().is_ok() {
         Ok("H5T_IEEE_F64LE".to_string())
     } else if h5_dataset.read_raw::<hdf5::types::VarLenUnicode>().is_ok() {
-        Ok("H5T_C_S1".to_string())
+        Ok("H5T_STRING".to_string())
+    } else if h5_dataset.read_raw::<hdf5::types::VarLenAscii>().is_ok() {
+        Ok("H5T_STRING".to_string())
     } else {
         Err("Unsupported data type".into())
     }
@@ -829,9 +830,15 @@ async fn copy_group_attributes(
 ) -> Result<(), Box<dyn Error>> {
     let attr_names = h5_group.attr_names()?;
     
+    if !attr_names.is_empty() {
+        debug!("Found {} group attributes: {:?}", attr_names.len(), attr_names);
+    }
+    
     for attr_name in attr_names {
         if let Ok(attr) = h5_group.attr(&attr_name) {
             copy_attribute_value(&attr, client, domain, group_id, &attr_name, stats).await?;
+        } else {
+            warn!("Could not access group attribute: {}", attr_name);
         }
     }
     
@@ -848,13 +855,97 @@ async fn copy_dataset_attributes(
 ) -> Result<(), Box<dyn Error>> {
     let attr_names = h5_dataset.attr_names()?;
     
+    if !attr_names.is_empty() {
+        debug!("Found {} dataset attributes: {:?}", attr_names.len(), attr_names);
+    }
+    
     for attr_name in attr_names {
         if let Ok(attr) = h5_dataset.attr(&attr_name) {
             copy_attribute_value(&attr, client, domain, dataset_id, &attr_name, stats).await?;
+        } else {
+            warn!("Could not access dataset attribute: {}", attr_name);
         }
     }
     
     Ok(())
+}
+
+/// Read an attribute value - simplified approach for common HDF5 attribute types
+fn read_attribute_by_type(attr: &hdf5::Attribute, attr_name: &str) -> Result<serde_json::Value, Box<dyn Error>> {
+    let shape = attr.space()?.shape();
+    let is_scalar = shape.is_empty() || (shape.len() == 1 && shape[0] == 1);
+    
+    debug!("Reading attribute '{}', shape: {:?}, is_scalar: {}", attr_name, shape, is_scalar);
+
+    let attr_type = attr.dtype()?.to_descriptor()?;
+    debug!("Attribute '{}' type: {:?}", attr_name, attr_type);
+
+    if is_scalar {
+        match attr_type {
+            hdf5::types::TypeDescriptor::VarLenAscii => {
+                let val = attr.read_scalar::<hdf5::types::VarLenAscii>()?;
+                return Ok(json!(val.to_string()));
+            }
+            hdf5::types::TypeDescriptor::VarLenUnicode => {
+                let val = attr.read_scalar::<hdf5::types::VarLenUnicode>()?;
+                return Ok(json!(val.to_string()));
+            }
+            hdf5::types::TypeDescriptor::Float(FloatSize::U8) => {
+                let val = attr.read_scalar::<f64>()?;
+                return Ok(json!(val));
+            }
+            hdf5::types::TypeDescriptor::Float(FloatSize::U4) => {
+                let val = attr.read_scalar::<f32>()?;
+                return Ok(json!(val));
+            }
+            hdf5::types::TypeDescriptor::Integer(IntSize::U8) => {
+                let val = attr.read_scalar::<i64>()?;
+                return Ok(json!(val));
+            }
+            hdf5::types::TypeDescriptor::Integer(IntSize::U4) => {
+                let val = attr.read_scalar::<i32>()?;
+                return Ok(json!(val));
+            }
+            _ => {
+                warn!("Unsupported attribute type for scalar: {:?}", attr_type);
+                return Err(format!("Unsupported attribute type for scalar: {:?}", attr_type).into());
+            }
+        }
+    } else {
+        match attr_type {
+            hdf5::types::TypeDescriptor::VarLenAscii => {
+                let arr = attr.read_raw::<hdf5::types::VarLenAscii>()?;
+                let strings: Vec<String> = arr.into_iter().map(|s| s.to_string()).collect();
+                return Ok(json!(strings));
+            }
+            hdf5::types::TypeDescriptor::VarLenUnicode => {
+                let arr = attr.read_raw::<hdf5::types::VarLenUnicode>()?;
+                let strings: Vec<String> = arr.into_iter().map(|s| s.to_string()).collect();
+                return Ok(json!(strings));
+            }
+            hdf5::types::TypeDescriptor::Float(FloatSize::U8) => {
+                let arr = attr.read_raw::<f64>()?;
+                return Ok(json!(arr));
+            }
+            hdf5::types::TypeDescriptor::Float(FloatSize::U4) => {
+                let arr = attr.read_raw::<f32>()?;
+                return Ok(json!(arr));
+            }
+            hdf5::types::TypeDescriptor::Integer(IntSize::U8) => {
+                let arr = attr.read_raw::<i64>()?;
+                return Ok(json!(arr));
+            }
+            hdf5::types::TypeDescriptor::Integer(IntSize::U4) => {
+                let arr = attr.read_raw::<i32>()?;
+                return Ok(json!(arr));
+            }
+            _ => {
+                warn!("Unsupported attribute type for array: {:?}", attr_type);
+                return Err(format!("Unsupported attribute type for array: {:?}", attr_type).into());
+            }
+        }
+        
+    }
 }
 
 /// Copy an individual attribute value
@@ -868,25 +959,24 @@ async fn copy_attribute_value(
 ) -> Result<(), Box<dyn Error>> {
     debug!("Copying attribute: {}", attr_name);
     
-    // Try to read the attribute as different types
-    let value = if let Ok(string_val) = attr.read_scalar::<hdf5::types::VarLenUnicode>() {
-        json!(string_val.to_string())
-    } else if let Ok(int_val) = attr.read_scalar::<i32>() {
-        json!(int_val)
-    } else if let Ok(float_val) = attr.read_scalar::<f64>() {
-        json!(float_val)
-    } else if let Ok(int_array) = attr.read_raw::<i32>() {
-        json!(int_array)
-    } else if let Ok(float_array) = attr.read_raw::<f64>() {
-        json!(float_array)
-    } else {
-        warn!("Could not read attribute: {}", attr_name);
-        return Ok(());
+    // Read attribute based on its actual datatype
+    let value = match read_attribute_by_type(attr, attr_name) {
+        Ok(val) => val,
+        Err(e) => {
+            warn!("Could not read attribute '{}': {}", attr_name, e);
+            if let Ok(dtype) = attr.dtype() {
+                warn!("Attribute '{}' has dtype size: {}", attr_name, dtype.size());
+            }
+            return Ok(());
+        }
     };
+    
+    debug!("Successfully read attribute '{}': {:?}", attr_name, value);
     
     // Set the attribute in HSDS
     match client.attributes().set_attribute(domain, object_id, attr_name, value).await {
         Ok(_) => {
+            debug!("Successfully set attribute '{}' in HSDS", attr_name);
             stats.increment_attributes();
         },
         Err(e) => {

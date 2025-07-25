@@ -1,10 +1,12 @@
 use crate::{
     client::HsdsClient,
     error::HsdsResult,
-    models::{Dataset, Datasets, DatasetCreateRequest, DatasetValueRequest, ShapeUpdateRequest},
+    models::{Dataset, Datasets, DatasetCreateRequest, DatasetValueRequest, ShapeUpdateRequest, 
+             StringDataType, DataTypeSpec, ShapeSpec, StringCharSet, StringPadding, StringLength, LinkRequest},
 };
 use reqwest::Method;
 use bytes::Bytes;
+use log::debug;
 
 /// Dataset API operations  
 pub struct DatasetApi<'a> {
@@ -26,11 +28,20 @@ impl<'a> DatasetApi<'a> {
         domain: &str,
         request: DatasetCreateRequest,
     ) -> HsdsResult<Dataset> {
+
         let mut req = self.client.request(Method::POST, "/datasets").await?;
         req = HsdsClient::with_domain(req, domain);
         req = req.json(&request);
 
-        self.client.execute(req).await
+        debug!("Creating dataset in domain: {}", domain);
+        debug!("DatasetCreateRequest: {:?}", request);
+
+        let result = self.client.execute(req).await;
+
+        if let Err(ref err) = result {
+            debug!("Error details: {:?}", err);
+        }
+        return result
     }
 
     /// List all Datasets in Domain
@@ -235,5 +246,106 @@ impl<'a> DatasetApi<'a> {
         req = req.json(&points);
 
         self.client.execute(req).await
+    }
+}
+
+impl DatasetCreateRequest {
+    /// Create a dataset from an HSDS data type string
+    /// This method determines the appropriate DataTypeSpec based on the HSDS type
+    pub fn from_hsds_type(
+        hsds_type: &str,
+        dimensions: Vec<u64>,
+    ) -> Self {
+        let data_type = match hsds_type {
+            // String types - use structured string type
+            "H5T_STRING" => DataTypeSpec::String(StringDataType::variable_ascii()),
+            
+            // Numeric types - use predefined types
+            "H5T_STD_U8LE" | "H5T_STD_I8LE" | "H5T_STD_U16LE" | "H5T_STD_I16LE" |
+            "H5T_STD_U32LE" | "H5T_STD_I32LE" | "H5T_STD_I64LE" |
+            "H5T_IEEE_F32LE" | "H5T_IEEE_F64LE" => DataTypeSpec::Predefined(hsds_type.to_string()),
+            
+            // Default to predefined for any other type
+            _ => DataTypeSpec::Predefined(hsds_type.to_string()),
+        };
+
+        Self {
+            data_type,
+            shape: Some(ShapeSpec::Dimensions(dimensions)),
+            maxdims: None,
+            creation_properties: None,
+            link: None,
+        }
+    }
+
+    /// Create a dataset with linking to a parent group
+    pub fn from_hsds_type_with_link(
+        hsds_type: &str,
+        dimensions: Vec<u64>,
+        parent_group_id: &str,
+        dataset_name: &str,
+    ) -> Self {
+        let mut request = Self::from_hsds_type(hsds_type, dimensions);
+        request.link = Some(LinkRequest {
+            id: parent_group_id.to_string(),
+            name: dataset_name.to_string(),
+        });
+        request
+    }
+}
+
+impl StringDataType {
+    /// Create a new variable-length UTF-8 string type
+    pub fn variable_utf8() -> Self {
+        Self {
+            class: "H5T_STRING".to_string(),
+            char_set: StringCharSet::Utf8,
+            str_pad: StringPadding::NullPad,
+            length: StringLength::Variable("H5T_VARIABLE".to_string()),
+        }
+    }
+
+    /// Create a new fixed-length UTF-8 string type
+    pub fn fixed_utf8(length: u32) -> Self {
+        Self {
+            class: "H5T_STRING".to_string(),
+            char_set: StringCharSet::Utf8,
+            str_pad: StringPadding::NullPad,
+            length: StringLength::Fixed(length),
+        }
+    }
+
+    /// Create a new variable-length ASCII string type
+    pub fn variable_ascii() -> Self {
+        Self {
+            class: "H5T_STRING".to_string(),
+            char_set: StringCharSet::Ascii,
+            str_pad: StringPadding::NullPad,
+            length: StringLength::Variable("H5T_VARIABLE".to_string()),
+        }
+    }
+
+    /// Create a new fixed-length ASCII string type
+    pub fn fixed_ascii(length: u32) -> Self {
+        Self {
+            class: "H5T_STRING".to_string(),
+            char_set: StringCharSet::Ascii,
+            str_pad: StringPadding::NullPad,
+            length: StringLength::Fixed(length),
+        }
+    }
+
+    /// Create a string type with custom parameters
+    pub fn custom(
+        char_set: StringCharSet,
+        str_pad: StringPadding,
+        length: StringLength,
+    ) -> Self {
+        Self {
+            class: "H5T_STRING".to_string(),
+            char_set,
+            str_pad,
+            length,
+        }
     }
 }
