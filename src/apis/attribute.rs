@@ -139,6 +139,7 @@ impl<'a> AttributeApi<'a> {
             serde_json::Value::String(_) => json!({
                 "class": "H5T_STRING",
                 "charSet": "H5T_CSET_UTF8",
+                "strPad": "H5T_STR_NULLTERM",
                 "length": "H5T_VARIABLE"
             }),
             serde_json::Value::Number(n) => {
@@ -169,6 +170,7 @@ impl<'a> AttributeApi<'a> {
                     json!({
                         "class": "H5T_STRING",
                         "charSet": "H5T_CSET_UTF8",
+                        "strPad": "H5T_STR_NULLTERM",
                         "length": "H5T_VARIABLE"
                     })
                 } else {
@@ -178,7 +180,8 @@ impl<'a> AttributeApi<'a> {
             },
             _ => json!({
                 "class": "H5T_STRING",
-                "charSet": "H5T_CSET_UTF8", 
+                "charSet": "H5T_CSET_UTF8",
+                "strPad": "H5T_STR_NULLTERM",
                 "length": "H5T_VARIABLE"
             })
         }
@@ -270,7 +273,7 @@ impl<'a> AttributeApi<'a> {
                 format!("Unknown object ID format: '{}'. Expected ID to start with 'g-', 'd-', or 't-'", object_id)
             )),
         };
-        
+
         self.set_attribute_auto(domain, collection, object_id, attr_name, value).await
     }
 }

@@ -2,7 +2,7 @@ use hdf5::types::{FloatSize, IntSize};
 use hsds_client::{
     HsdsClient, BasicAuth, 
     DatasetCreateRequest, DatasetValueRequest,
-    LinkCreateRequest
+    GroupCreateRequest
 };
 use hdf5::{File as H5File, Group as H5Group, Dataset as H5Dataset};
 use serde_json::json;
@@ -28,6 +28,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     
     println!("🚀 HSDS HDF5 File Loader");
     println!("========================");
+    println!();
     
     // Path to the test HDF5 file
     let h5_file_path = "examples/test-files/S-N1-01388_reduced.h5";
@@ -89,7 +90,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     verify_upload(&client, &target_file).await?;
     
     // Keep the uploaded file on the server
-    println!("\n✅ Upload completed! File available at: http://localhost:3000/file?={}", target_file);
+    println!("\n✅ Upload completed! File available at: http://localhost:3000/?file={}", target_file);
 
     // Clean up (uncomment if you want to delete the file after upload)
     // println!("\n🗑️  Cleaning up...");
@@ -220,12 +221,11 @@ async fn load_group_recursive(
         h5_file.group(current_path)?
     };
     
-    // Copy attributes for this group
-    copy_group_attributes(&h5_group, client, domain, parent_group_id, stats).await?;
+    
     
     // Get all member names
     let member_names = h5_group.member_names()?;
-    
+    debug!("Found {} members in group '{}'", member_names.len(), current_path);
     for member_name in member_names {
         let member_path = if current_path == "/" {
             format!("/{}", member_name)
@@ -236,25 +236,21 @@ async fn load_group_recursive(
         debug!("Processing member: {}", member_path);
         
         // Try to open as a group first
-        if let Ok(_sub_group) = h5_file.group(&member_path) {
+        if let Ok(sub_group) = h5_file.group(&member_path) {
             // It's a group - create it in HSDS and recurse
             println!("   📁 Creating group: {}", member_name);
-            
-            let hsds_group = client.groups().create_group(domain, None).await?;
-            
-            // Link it to the parent
-            let link_request = LinkCreateRequest {
-                id: Some(hsds_group.id.clone()),
-                h5path: None,
-                h5domain: None,
+
+            // Create the group in HSDS with link information
+            let group_request = GroupCreateRequest {
+                link: Some(hsds_client::LinkRequest {
+                    id: parent_group_id.to_string(),
+                    name: member_name.clone(),
+                }),
             };
-            
-            client.links().create_link(
-                domain,
-                parent_group_id,
-                &member_name,
-                link_request
-            ).await?;
+            let hsds_group = client.groups().create_group(domain, Some(group_request)).await?;
+
+            // Copy attributes for this group
+            copy_group_attributes(&sub_group, client, domain, &hsds_group.id, stats).await?;
             
             stats.increment_groups();
             
@@ -369,34 +365,62 @@ async fn copy_dataset_data_single(
 ) -> Result<(), Box<dyn Error>> {
     let shape = h5_dataset.shape();
     
-    // Handle different data types by trying to read them
-    let json_value = if let Ok(data) = h5_dataset.read_raw::<u8>() {
-        convert_to_multidim_json(data, &shape)
-    } else if let Ok(data) = h5_dataset.read_raw::<i8>() {
-        convert_to_multidim_json(data, &shape)
-    } else if let Ok(data) = h5_dataset.read_raw::<u16>() {
-        convert_to_multidim_json(data, &shape)
-    } else if let Ok(data) = h5_dataset.read_raw::<i16>() {
-        convert_to_multidim_json(data, &shape)
-    } else if let Ok(data) = h5_dataset.read_raw::<u32>() {
-        convert_to_multidim_json(data, &shape)
-    } else if let Ok(data) = h5_dataset.read_raw::<i32>() {
-        convert_to_multidim_json(data, &shape)
-    } else if let Ok(data) = h5_dataset.read_raw::<i64>() {
-        convert_to_multidim_json(data, &shape)
-    } else if let Ok(data) = h5_dataset.read_raw::<f32>() {
-        convert_to_multidim_json(data, &shape)
-    } else if let Ok(data) = h5_dataset.read_raw::<f64>() {
-        convert_to_multidim_json(data, &shape)
-    } else if let Ok(data) = h5_dataset.read_raw::<hdf5::types::VarLenUnicode>() {
-        let strings: Vec<String> = data.into_iter().map(|s| s.to_string()).collect();
-        json!(strings)
-    } else if let Ok(data) = h5_dataset.read_raw::<hdf5::types::VarLenAscii>() {
-        let strings: Vec<String> = data.into_iter().map(|s| s.to_string()).collect();
-        json!(strings)
-    } else {
-        warn!("Unsupported data type for dataset");
-        return Ok(()); // Skip unsupported types
+    // Get the actual HDF5 data type to make better decisions
+    let dtype = h5_dataset.dtype()?;
+    let type_desc = dtype.to_descriptor()?;
+    
+    // Handle different data types based on the actual HDF5 type
+    let json_value = match type_desc {
+        hdf5::types::TypeDescriptor::Float(FloatSize::U8) => {
+            let data = h5_dataset.read_raw::<f64>()?;
+            convert_to_multidim_json(data, &shape)
+        },
+        hdf5::types::TypeDescriptor::Float(FloatSize::U4) => {
+            let data = h5_dataset.read_raw::<f32>()?;
+            convert_to_multidim_json(data, &shape)
+        },
+        hdf5::types::TypeDescriptor::Integer(IntSize::U8) => {
+            let data = h5_dataset.read_raw::<i64>()?;
+            convert_to_multidim_json(data, &shape)
+        },
+        hdf5::types::TypeDescriptor::Integer(IntSize::U4) => {
+            let data = h5_dataset.read_raw::<i32>()?;
+            convert_to_multidim_json(data, &shape)
+        },
+        hdf5::types::TypeDescriptor::Integer(IntSize::U2) => {
+            let data = h5_dataset.read_raw::<i16>()?;
+            convert_to_multidim_json(data, &shape)
+        },
+        hdf5::types::TypeDescriptor::Integer(IntSize::U1) => {
+            let data = h5_dataset.read_raw::<i8>()?;
+            convert_to_multidim_json(data, &shape)
+        },
+        hdf5::types::TypeDescriptor::VarLenUnicode => {
+            let data = h5_dataset.read_raw::<hdf5::types::VarLenUnicode>()?;
+            let strings: Vec<String> = data.into_iter().map(|s| s.to_string()).collect();
+            json!(strings)
+        },
+        hdf5::types::TypeDescriptor::VarLenAscii => {
+            let data = h5_dataset.read_raw::<hdf5::types::VarLenAscii>()?;
+            let strings: Vec<String> = data.into_iter().map(|s| s.to_string()).collect();
+            json!(strings)
+        },
+        _ => {
+            // Fallback to the old logic for unsupported types
+            warn!("Using fallback type detection for unsupported type: {:?}", type_desc);
+            if let Ok(data) = h5_dataset.read_raw::<f64>() {
+                convert_to_multidim_json(data, &shape)
+            } else if let Ok(data) = h5_dataset.read_raw::<f32>() {
+                convert_to_multidim_json(data, &shape)
+            } else if let Ok(data) = h5_dataset.read_raw::<i64>() {
+                convert_to_multidim_json(data, &shape)
+            } else if let Ok(data) = h5_dataset.read_raw::<i32>() {
+                convert_to_multidim_json(data, &shape)
+            } else {
+                warn!("Could not read dataset with any supported type");
+                return Ok(());
+            }
+        }
     };
 
     let value_request = DatasetValueRequest {
@@ -767,31 +791,35 @@ fn extract_2d_chunk<T: Clone>(data: &Vec<T>, _total_rows: usize, cols: usize, st
 
 /// Convert HDF5 data type to HSDS data type
 fn convert_hdf5_dtype_to_hsds(h5_dataset: &H5Dataset) -> Result<String, Box<dyn Error>> {
-    // Try reading with different types to determine the actual type
-    if h5_dataset.read_raw::<u8>().is_ok() {
-        Ok("H5T_STD_U8LE".to_string())
-    } else if h5_dataset.read_raw::<i8>().is_ok() {
-        Ok("H5T_STD_I8LE".to_string())
-    } else if h5_dataset.read_raw::<u16>().is_ok() {
-        Ok("H5T_STD_U16LE".to_string())
-    } else if h5_dataset.read_raw::<i16>().is_ok() {
-        Ok("H5T_STD_I16LE".to_string())
-    } else if h5_dataset.read_raw::<u32>().is_ok() {
-        Ok("H5T_STD_U32LE".to_string())
-    } else if h5_dataset.read_raw::<i32>().is_ok() {
-        Ok("H5T_STD_I32LE".to_string())
-    } else if h5_dataset.read_raw::<i64>().is_ok() {
-        Ok("H5T_STD_I64LE".to_string())
-    } else if h5_dataset.read_raw::<f32>().is_ok() {
-        Ok("H5T_IEEE_F32LE".to_string())
-    } else if h5_dataset.read_raw::<f64>().is_ok() {
-        Ok("H5T_IEEE_F64LE".to_string())
-    } else if h5_dataset.read_raw::<hdf5::types::VarLenUnicode>().is_ok() {
-        Ok("H5T_STRING".to_string())
-    } else if h5_dataset.read_raw::<hdf5::types::VarLenAscii>().is_ok() {
-        Ok("H5T_STRING".to_string())
-    } else {
-        Err("Unsupported data type".into())
+    // Use the actual HDF5 data type descriptor instead of trying to read
+    let dtype = h5_dataset.dtype()?;
+    let type_desc = dtype.to_descriptor()?;
+    
+    match type_desc {
+        hdf5::types::TypeDescriptor::Float(FloatSize::U8) => Ok("H5T_IEEE_F64LE".to_string()),
+        hdf5::types::TypeDescriptor::Float(FloatSize::U4) => Ok("H5T_IEEE_F32LE".to_string()),
+        hdf5::types::TypeDescriptor::Integer(IntSize::U8) => {
+            // For 64-bit integers, default to signed
+            Ok("H5T_STD_I64LE".to_string())
+        },
+        hdf5::types::TypeDescriptor::Integer(IntSize::U4) => {
+            // For 32-bit integers, default to signed
+            Ok("H5T_STD_I32LE".to_string())
+        },
+        hdf5::types::TypeDescriptor::Integer(IntSize::U2) => {
+            // For 16-bit integers, default to signed
+            Ok("H5T_STD_I16LE".to_string())
+        },
+        hdf5::types::TypeDescriptor::Integer(IntSize::U1) => {
+            // For 8-bit integers, default to signed
+            Ok("H5T_STD_I8LE".to_string())
+        },
+        hdf5::types::TypeDescriptor::VarLenUnicode => Ok("H5T_STRING".to_string()),
+        hdf5::types::TypeDescriptor::VarLenAscii => Ok("H5T_STRING".to_string()),
+        _ => {
+            warn!("Unsupported HDF5 data type: {:?}", type_desc);
+            Err("Unsupported data type".into())
+        }
     }
 }
 
@@ -829,7 +857,7 @@ async fn copy_group_attributes(
     stats: &LoadStats,
 ) -> Result<(), Box<dyn Error>> {
     let attr_names = h5_group.attr_names()?;
-    
+    debug!("Found {} group attributes: {:?}", attr_names.len(), attr_names);
     if !attr_names.is_empty() {
         debug!("Found {} group attributes: {:?}", attr_names.len(), attr_names);
     }
@@ -873,7 +901,7 @@ async fn copy_dataset_attributes(
 /// Read an attribute value - simplified approach for common HDF5 attribute types
 fn read_attribute_by_type(attr: &hdf5::Attribute, attr_name: &str) -> Result<serde_json::Value, Box<dyn Error>> {
     let shape = attr.space()?.shape();
-    let is_scalar = shape.is_empty() || (shape.len() == 1 && shape[0] == 1);
+    let is_scalar = shape.is_empty();
     
     debug!("Reading attribute '{}', shape: {:?}, is_scalar: {}", attr_name, shape, is_scalar);
 
@@ -937,6 +965,14 @@ fn read_attribute_by_type(attr: &hdf5::Attribute, attr_name: &str) -> Result<ser
             }
             hdf5::types::TypeDescriptor::Integer(IntSize::U4) => {
                 let arr = attr.read_raw::<i32>()?;
+                return Ok(json!(arr));
+            }
+            hdf5::types::TypeDescriptor::Integer(IntSize::U2) => {
+                let arr = attr.read_raw::<i16>()?;
+                return Ok(json!(arr));
+            }
+            hdf5::types::TypeDescriptor::Integer(IntSize::U1) => {
+                let arr = attr.read_raw::<i8>()?;
                 return Ok(json!(arr));
             }
             _ => {
